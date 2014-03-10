@@ -107,6 +107,44 @@ MediaScanResult MediaScanner::processDirectory(
 }
 
 bool MediaScanner::shouldSkipDirectory(char *path) {
+    static const char* whiteList [] = {
+        "dcim",
+        "ringtones",
+        "alarm",
+        "notifications",
+        "download",
+        "pictures",
+        "movies",
+        "podcasts",
+        "music"
+    };
+    static const int nWhiteList = sizeof(whiteList) / sizeof(whiteList[0]);
+
+    static const char *prefix = "/storage/sdcard0/";
+    static const int prefixLen = strlen(prefix);
+
+    int l = strlen(path);
+    char *pathLower = (char *)malloc(l+1);
+    for (int i = 0; i < l; i++) {
+        pathLower[i] = (path[i] >= 'A' && path[i] <= 'Z') ? (path[i] - 'A' + 'a') : path[i];
+    }
+
+    if (strncmp(pathLower, prefix, prefixLen) == 0) {
+        if (l == prefixLen) {
+            // path == prefix
+            return false;
+        }
+        for (int i = 0; i < nWhiteList; i++) {
+            const char *dir = whiteList[i];
+            int dirLen = strlen(dir);
+            if (strncmp(pathLower+prefixLen, dir, dirLen) == 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+    free(pathLower);
+
     if (path && mSkipList && mSkipIndex) {
         int len = strlen(path);
         int idx = 0;
