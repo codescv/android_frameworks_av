@@ -24,6 +24,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
+#include <stdio.h>
+#include <stdlib.h>
+
 namespace android {
 
 MediaScanner::MediaScanner()
@@ -106,44 +109,115 @@ MediaScanResult MediaScanner::processDirectory(
     return result;
 }
 
-bool MediaScanner::shouldSkipDirectory(char *path) {
-    static const char* whiteList [] = {
-        "dcim",
-        "ringtones",
-        "alarm",
-        "notifications",
-        "download",
-        "pictures",
-        "movies",
-        "podcasts",
-        "music"
-    };
-    static const int nWhiteList = sizeof(whiteList) / sizeof(whiteList[0]);
-
-    static const char *prefix = "/storage/sdcard0/";
-    static const int prefixLen = strlen(prefix);
-
-    int l = strlen(path);
-    char *pathLower = (char *)malloc(l+1);
-    for (int i = 0; i < l; i++) {
-        pathLower[i] = (path[i] >= 'A' && path[i] <= 'Z') ? (path[i] - 'A' + 'a') : path[i];
+// load whitelist from file
+bool loadWhiteList(const char*** whitelist, int *length) {
+    const char** whiteList = NULL;
+    int nWhiteList = 0;
+    bool isWhiteListMode = true;
+    const char* const wlFile = "/sdcard/.mediascanner_whitelist";
+    FILE *fp = fopen(wlFile, "r");
+    char *line = NULL;
+    size_t zero = 0;
+    // maximum entries allowed in whitelist
+    int max_list_len = 100;
+    if (fp) {
+        ALOGD("found config file %s, media scanner in whitelist mode", wlFile);
+        ssize_t len;
+        whiteList = new const char*[max_list_len];
+        while((len = getline(&line, &zero, fp)) >= 0) {
+            if (nWhiteList >= max_list_len) {
+                ALOGD("whitelist too long (>%d), ignoring lines after",           max_list_len);
+                break;
+            }
+            if (len <= 1) {
+                // skip blank line
+                line = NULL;
+                zero = 0;
+                continue;
+            }
+            line[len-1] = '\0'; // remove trailing '\n'
+            whiteList[nWhiteList++] = line;
+            line = NULL;
+            zero = 0;
+        }
+        fclose(fp);
+    } else {
+        ALOGD("file not found: %s, white list mode disabled", wlFile);
+        isWhiteListMode = false;
     }
 
-    if (strncmp(pathLower, prefix, prefixLen) == 0) {
-        if (l == prefixLen) {
-            // path == prefix
-            return false;
+    *whitelist = whiteList;
+    *length = nWhiteList;
+
+    for (int i = 0; i < nWhiteList; i++) {
+        ALOGD("whitelist: %s", whiteList[i]);
+    }
+
+    return isWhiteListMode;
+}
+
+bool MediaScanner::shouldSkipDirectory(char *path) {
+    static const char** whiteList = NULL;
+    static int nWhiteList = 0;
+    static bool isLoaded = false;
+    static bool isWhiteListMode = false;
+
+    if (!isLoaded) {
+        isWhiteListMode = loadWhiteList(&whiteList, &nWhiteList);
+        isLoaded = true;
+    }
+
+    static const char *prefixes[] = {"/storage/emulated/0/", "/storage/sdcard0/"};
+    static const int nPrefixes = sizeof(prefixes) / sizeof(prefixes[0]);
+
+    if (isWhiteListMode) {
+        bool shouldSkip = true;
+        // apply whitelist rule only when prefix matches
+        bool applicable = false;
+
+        int l = strlen(path);
+        char *pathLower = (char *)malloc(l+1);
+        for (int i = 0; i < l; i++) {
+            pathLower[i] = (path[i] >= 'A' && path[i] <= 'Z') ? (path[i] - 'A' + 'a') : path[i];
         }
-        for (int i = 0; i < nWhiteList; i++) {
-            const char *dir = whiteList[i];
-            int dirLen = strlen(dir);
-            if (strncmp(pathLower+prefixLen, dir, dirLen) == 0) {
-                return false;
+
+        for (int k = 0; k < nPrefixes; k++) {
+            const char* prefix = prefixes[k];
+            int prefixLen = strlen(prefix);
+            if (strncmp(pathLower, prefix, prefixLen) == 0) {
+                // prefix is matched
+                applicable = true;
+
+                if (l == prefixLen) {
+                    // path == prefix
+                    shouldSkip = false;
+                } else {
+                    for (int i = 0; i < nWhiteList; i++) {
+                        const char *dir = whiteList[i];
+                        int dirLen = strlen(dir);
+                        if (strncmp(pathLower+prefixLen, dir, dirLen) == 0) {
+                            ALOGD("in white list: %s", path);
+                            shouldSkip = false;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (applicable) {
+                if (pathLower) {
+                    free(pathLower);
+                    pathLower = NULL;
+                }
+                return shouldSkip;
             }
         }
-        return true;
+
+        if (pathLower) {
+            free(pathLower);
+            pathLower = NULL;
+        }
     }
-    free(pathLower);
 
     if (path && mSkipList && mSkipIndex) {
         int len = strlen(path);
